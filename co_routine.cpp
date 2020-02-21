@@ -48,6 +48,7 @@ using namespace std;
 stCoRoutine_t *GetCurrCo( stCoRoutineEnv_t *env );
 struct stCoEpoll_t;
 
+//“协程上下文”
 struct stCoRoutineEnv_t
 {
 	stCoRoutine_t *pCallStack[ 128 ];
@@ -632,6 +633,9 @@ void save_stack_buffer(stCoRoutine_t* occupy_co)
 	memcpy(occupy_co->save_buffer, occupy_co->stack_sp, len);
 }
 
+/*
+ * 协程调度
+*/
 void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 {
  	stCoRoutineEnv_t* env = co_get_curr_thread_env();

@@ -45,7 +45,7 @@ struct stShareStack_t
 };
 
 
-
+//协程
 struct stCoRoutine_t
 {
 	stCoRoutineEnv_t *env;
