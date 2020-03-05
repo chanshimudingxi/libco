@@ -27,23 +27,23 @@
 
 struct stCoRoutine_t;
 struct stShareStack_t;
-
+//当前协程属性
 struct stCoRoutineAttr_t
 {
-	int stack_size;
-	stShareStack_t*  share_stack;
+	int stack_size;//“共享栈”里面的协程栈个数
+	stShareStack_t*  share_stack;//“共享栈”
 	stCoRoutineAttr_t()
 	{
 		stack_size = 128 * 1024;
 		share_stack = NULL;
 	}
-}__attribute__ ((packed));
+}__attribute__ ((packed));//不对齐
 
 struct stCoEpoll_t;
 typedef int (*pfn_co_eventloop_t)(void *);
 typedef void *(*pfn_co_routine_t)( void * );
 
-//2.co_routine
+//2.co_routine 协程的操作接口
 
 int 	co_create( stCoRoutine_t **co,const stCoRoutineAttr_t *attr,void *(*routine)(void*),void *arg );
 void    co_resume( stCoRoutine_t *co );

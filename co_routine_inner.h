@@ -26,16 +26,17 @@ struct stCoSpec_t
 {
 	void *value;
 };
-
+//协程调度结构-函数栈的实现
 struct stStackMem_t
 {
-	stCoRoutine_t* occupy_co;
+	stCoRoutine_t* occupy_co;//函数栈当前的协程
 	int stack_size;
-	char* stack_bp; //stack_buffer + stack_size
+	char* stack_bp; //stack_buffer + stack_size。栈的基址，栈是从高到低扩展
 	char* stack_buffer;
 
 };
 
+//协程调度结构-栈管理结构-共享栈-环形结构
 struct stShareStack_t
 {
 	unsigned int alloc_idx;
@@ -48,10 +49,10 @@ struct stShareStack_t
 //协程
 struct stCoRoutine_t
 {
-	stCoRoutineEnv_t *env;
-	pfn_co_routine_t pfn;
-	void *arg;
-	coctx_t ctx;
+	stCoRoutineEnv_t *env;//当前所在线程的环境变量，对于整个线程上的所有协程来说，它是一个全局性的变量
+	pfn_co_routine_t pfn;//协程的执行主体函数
+	void *arg;//函数参数
+	coctx_t ctx;//协程上下文
 
 	char cStart;
 	char cEnd;

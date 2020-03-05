@@ -292,7 +292,7 @@ int co_epoll_ctl( int epfd,int op,int fd,struct epoll_event * ev )
 
 	return ret;
 }
-
+//分配“线程事件”存储结构
 struct co_epoll_res *co_epoll_res_alloc( int n )
 {
 	struct co_epoll_res * ptr = 

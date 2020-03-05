@@ -48,16 +48,17 @@ using namespace std;
 stCoRoutine_t *GetCurrCo( stCoRoutineEnv_t *env );
 struct stCoEpoll_t;
 
-//“协程上下文”
+//“由于用的是共享栈的技术，同时又是N：1的模型，所以这个其实就是当前线程
+//用来进行协议切换的统一管理结构”。由一个事件循环和一个栈共享区域构成。
 struct stCoRoutineEnv_t
 {
-	stCoRoutine_t *pCallStack[ 128 ];
-	int iCallStackSize;
-	stCoEpoll_t *pEpoll;
+	stCoRoutine_t *pCallStack[ 128 ];//栈共享区域，每个就是一个协程
+	int iCallStackSize;//已经压栈的协程个数
+	stCoEpoll_t *pEpoll;//事件循环
 
 	//for copy stack log lastco and nextco
-	stCoRoutine_t* pending_co;
-	stCoRoutine_t* occupy_co;
+	stCoRoutine_t* pending_co;  //没有压栈的协程列表
+	stCoRoutine_t* occupy_co;   //已经压栈的协程列表
 };
 //int socket(int domain, int type, int protocol);
 void co_log_err( const char *fmt,... )
@@ -267,6 +268,7 @@ void inline Join( TLink*apLink,TLink *apOther )
 }
 
 /////////////////for copy stack //////////////////////////
+//初始化协程栈
 stStackMem_t* co_alloc_stackmem(unsigned int stack_size)
 {
 	stStackMem_t* stack_mem = (stStackMem_t*)malloc(sizeof(stStackMem_t));
@@ -276,7 +278,7 @@ stStackMem_t* co_alloc_stackmem(unsigned int stack_size)
 	stack_mem->stack_bp = stack_mem->stack_buffer + stack_size;
 	return stack_mem;
 }
-
+//初始化共享栈
 stShareStack_t* co_alloc_sharestack(int count, int stack_size)
 {
 	stShareStack_t* share_stack = (stShareStack_t*)malloc(sizeof(stShareStack_t));
@@ -293,7 +295,7 @@ stShareStack_t* co_alloc_sharestack(int count, int stack_size)
 	share_stack->stack_array = stack_array;
 	return share_stack;
 }
-
+//从共享栈（环形数组）中取出一个栈空间
 static stStackMem_t* co_get_stackmem(stShareStack_t* share_stack)
 {
 	if (!share_stack)
@@ -310,16 +312,17 @@ static stStackMem_t* co_get_stackmem(stShareStack_t* share_stack)
 // ----------------------------------------------------------------------------
 struct stTimeoutItemLink_t;
 struct stTimeoutItem_t;
+//线程的事件循环
 struct stCoEpoll_t
 {
-	int iEpollFd;
-	static const int _EPOLL_SIZE = 1024 * 10;
+	int iEpollFd; //epoll fd
+	static const int _EPOLL_SIZE = 1024 * 10;//epoll大小
 
-	struct stTimeout_t *pTimeout;
+	struct stTimeout_t *pTimeout;//定时器
 
-	struct stTimeoutItemLink_t *pstTimeoutList;
+	struct stTimeoutItemLink_t *pstTimeoutList;//超时事件
 
-	struct stTimeoutItemLink_t *pstActiveList;
+	struct stTimeoutItemLink_t *pstActiveList;//存活事件
 
 	co_epoll_res *result; 
 
@@ -342,7 +345,7 @@ struct stTimeoutItem_t
 	OnPreparePfn_t pfnPrepare;
 	OnProcessPfn_t pfnProcess;
 
-	void *pArg; // routine 
+	void *pArg; // routine 协程
 	bool bTimeout;
 };
 struct stTimeoutItemLink_t
@@ -458,11 +461,11 @@ static int CoRoutineFunc( stCoRoutine_t *co,void * )
 }
 
 
-
+//新建协程
 struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAttr_t* attr,
 		pfn_co_routine_t pfn,void *arg )
 {
-
+  // 1. 设置协程属性
 	stCoRoutineAttr_t at;
 	if( attr )
 	{
@@ -482,7 +485,7 @@ struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAt
 		at.stack_size &= ~0xFFF;
 		at.stack_size += 0x1000;
 	}
-
+  // 2. malloc和init协程内存结构
 	stCoRoutine_t *lp = (stCoRoutine_t*)malloc( sizeof(stCoRoutine_t) );
 	
 	memset( lp,0,(long)(sizeof(stCoRoutine_t))); 
@@ -493,9 +496,9 @@ struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAt
 	lp->arg = arg;
 
 	stStackMem_t* stack_mem = NULL;
-	if( at.share_stack )
+	if( at.share_stack )//栈管理方式-共享栈
 	{
-		stack_mem = co_get_stackmem( at.share_stack);
+		stack_mem = co_get_stackmem( at.share_stack);//每次都从“共享栈”里面拿一个栈空间
 		at.stack_size = at.share_stack->stack_size;
 	}
 	else
@@ -504,8 +507,8 @@ struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAt
 	}
 	lp->stack_mem = stack_mem;
 
-	lp->ctx.ss_sp = stack_mem->stack_buffer;
-	lp->ctx.ss_size = at.stack_size;
+	lp->ctx.ss_sp = stack_mem->stack_buffer;//栈顶指针
+	lp->ctx.ss_size = at.stack_size;//栈大小
 
 	lp->cStart = 0;
 	lp->cEnd = 0;
@@ -555,7 +558,7 @@ void co_release( stCoRoutine_t *co )
 }
 
 void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co);
-
+//恢复协程
 void co_resume( stCoRoutine_t *co )
 {
 	stCoRoutineEnv_t *env = co->env;
@@ -566,9 +569,8 @@ void co_resume( stCoRoutine_t *co )
 		co->cStart = 1;
 	}
 	env->pCallStack[ env->iCallStackSize++ ] = co;
+  //当前协程调度到目标协程
 	co_swap( lpCurrRoutine, co );
-
-
 }
 
 
@@ -664,7 +666,7 @@ void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 		}
 	}
 
-	//swap context
+	//swap context 栈的切换，把当前协程栈切换成pending状态的协程栈
 	coctx_swap(&(curr->ctx),&(pending_co->ctx) );
 
 	//stack buffer may be overwrite, so get again;
@@ -741,14 +743,17 @@ static short EpollEvent2Poll( uint32_t events )
 	return e;
 }
 
-static __thread stCoRoutineEnv_t* gCoEnvPerThread = NULL;
-
+//当前线程自己的环境变量
+static __thread stCoRoutineEnv_t* gCoEnvPerThread = NULL;//__thread是GCC内置的线程局部变量，每一个线程有一份独立实体，互不影响
+//初始化当前线程自己的环境变量
 void co_init_curr_thread_env()
 {
 	gCoEnvPerThread = (stCoRoutineEnv_t*)calloc( 1, sizeof(stCoRoutineEnv_t) );
 	stCoRoutineEnv_t *env = gCoEnvPerThread;
 
-	env->iCallStackSize = 0;
+	env->iCallStackSize = 0;//一开始无任何栈的切换，也就是无任何协程调度
+  
+  //1. 创建第一个协程
 	struct stCoRoutine_t *self = co_create_env( env, NULL, NULL,NULL );
 	self->cIsMain = 1;
 
@@ -757,16 +762,18 @@ void co_init_curr_thread_env()
 
 	coctx_init( &self->ctx );
 
-	env->pCallStack[ env->iCallStackSize++ ] = self;
+	env->pCallStack[ env->iCallStackSize++ ] = self;//第一次栈的切换，也就是第一次协程调度
 
+  //2. 创建事件循环
 	stCoEpoll_t *ev = AllocEpoll();
 	SetEpoll( env,ev );
 }
+//获取当前线程自己的环境变量
 stCoRoutineEnv_t *co_get_curr_thread_env()
 {
 	return gCoEnvPerThread;
 }
-
+//恢复当前发生的IO事件所在的协程，进行处理
 void OnPollProcessEvent( stTimeoutItem_t * ap )
 {
 	stCoRoutine_t *co = (stCoRoutine_t*)ap->pArg;
@@ -793,7 +800,7 @@ void OnPollPreparePfn( stTimeoutItem_t * ap,struct epoll_event &e,stTimeoutItemL
 	}
 }
 
-
+//当前线程开始事件循环
 void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 {
 	if( !ctx->result )
@@ -802,7 +809,7 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 	}
 	co_epoll_res *result = ctx->result;
 
-
+  //循环处理“发生的事件”
 	for(;;)
 	{
 		int ret = co_epoll_wait( ctx->iEpollFd,result,stCoEpoll_t::_EPOLL_SIZE, 1 );
@@ -825,7 +832,7 @@ void co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg )
 			}
 		}
 
-
+    //定时事件
 		unsigned long long now = GetTickMS();
 		TakeAllTimeout( ctx->pTimeout,now,timeout );
 
@@ -877,7 +884,7 @@ void OnCoroutineEvent( stTimeoutItem_t * ap )
 	co_resume( co );
 }
 
-
+//初始化线程的事件循环
 stCoEpoll_t *AllocEpoll()
 {
 	stCoEpoll_t *ctx = (stCoEpoll_t*)calloc( 1,sizeof(stCoEpoll_t) );
@@ -1040,6 +1047,9 @@ void SetEpoll( stCoRoutineEnv_t *env,stCoEpoll_t *ev )
 {
 	env->pEpoll = ev;
 }
+//得到当前线程的事件循环，每个线程只有一个事件循环，
+//事件的轮询处理就对应着协程的切换，多个协程共享同一个线程，
+//libco的协程模型为N：1
 stCoEpoll_t *co_get_epoll_ct()
 {
 	if( !co_get_curr_thread_env() )

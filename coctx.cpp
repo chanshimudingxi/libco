@@ -107,7 +107,7 @@ int coctx_make(coctx_t* ctx, coctx_pfn_t pfn, const void* s, const void* s1) {
   return 0;
 }
 #elif defined(__x86_64__)
-//根据调用的函数创建“栈上下文”
+//创建“栈上下文”
 int coctx_make(coctx_t* ctx, coctx_pfn_t pfn, const void* s, const void* s1) {
   char* sp = ctx->ss_sp + ctx->ss_size - sizeof(void*); //计算栈顶地址
   sp = (char*)((unsigned long)sp & -16LL);//这里对第4位清零，使栈64位内存对齐。向下取整跟满递减搭配。
