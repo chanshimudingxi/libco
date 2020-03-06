@@ -48,17 +48,20 @@ using namespace std;
 stCoRoutine_t *GetCurrCo( stCoRoutineEnv_t *env );
 struct stCoEpoll_t;
 
-//“由于用的是共享栈的技术，同时又是N：1的模型，所以这个其实就是当前线程
-//用来进行协议切换的统一管理结构”。由一个事件循环和一个调用栈构成。
+
+// 特点：
+//  1. 用的是共享栈的技术
+//  2. 协程：线程模型为N：1
+// 功能：当前线程用来进行协议切换的统一管理结构。
 struct stCoRoutineEnv_t
 {
-	stCoRoutine_t *pCallStack[ 128 ];//协程的调用栈，从参数可以看出，libco只能支持128层协程的嵌套调用，这个深度已经足够使用了。
-	int iCallStackSize;//代表当前的调用深度
+	stCoRoutine_t *pCallStack[ 128 ];//协程的调用栈，从参数可以看出，只支持128层协程的嵌套调用。
+	int iCallStackSize;//当前的调用深度
 	stCoEpoll_t *pEpoll;//事件循环
 
 	//for copy stack log lastco and nextco
-	stCoRoutine_t* pending_co;  //没有压栈的协程列表
-	stCoRoutine_t* occupy_co;   //已经压栈的协程列表
+	stCoRoutine_t* pending_co;  //将要调用的协程
+	stCoRoutine_t* occupy_co;   //上个调用的协程
 };
 //int socket(int domain, int type, int protocol);
 void co_log_err( const char *fmt,... )
@@ -462,10 +465,9 @@ static int CoRoutineFunc( stCoRoutine_t *co,void * )
 
 
 //新建协程
-struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAttr_t* attr,
-		pfn_co_routine_t pfn,void *arg )
+struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAttr_t* attr, pfn_co_routine_t pfn, void *arg )
 {
-  // 1. 设置协程属性
+  // 1. 设置协程属性，主要是配置协程栈的大小
 	stCoRoutineAttr_t at;
 	if( attr )
 	{
@@ -496,19 +498,21 @@ struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAt
 	lp->arg = arg;
 
 	stStackMem_t* stack_mem = NULL;
-	if( at.share_stack )//栈管理方式-共享栈
+	if( at.share_stack )
 	{
-		stack_mem = co_get_stackmem( at.share_stack);//每次都从“共享栈”里面拿一个栈空间
+    //共享栈方式，所有协程共享一块大的栈空间，通过栈拷贝进行复用
+		stack_mem = co_get_stackmem( at.share_stack);
 		at.stack_size = at.share_stack->stack_size;
 	}
 	else
 	{
+    //独立栈方式，各个协程都有一个栈空间
 		stack_mem = co_alloc_stackmem(at.stack_size);
 	}
-	lp->stack_mem = stack_mem;
+	lp->stack_mem = stack_mem;//协程栈
 
-	lp->ctx.ss_sp = stack_mem->stack_buffer;//栈顶指针
-	lp->ctx.ss_size = at.stack_size;//栈大小
+	lp->ctx.ss_sp = stack_mem->stack_buffer;//协程切换上下文，栈顶指针
+	lp->ctx.ss_size = at.stack_size;//协程切换上下文，栈大小
 
 	lp->cStart = 0;
 	lp->cEnd = 0;
@@ -521,7 +525,7 @@ struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAt
 
 	return lp;
 }
-//创建协程
+//创建新的协程
 int co_create( stCoRoutine_t **ppco,const stCoRoutineAttr_t *attr,pfn_co_routine_t pfn,void *arg )
 {
 	if( !co_get_curr_thread_env() ) 
@@ -568,21 +572,13 @@ void co_resume( stCoRoutine_t *co )
 	stCoRoutine_t *lpCurrRoutine = env->pCallStack[ env->iCallStackSize - 1 ];
 	if( !co->cStart )
 	{
-    // 2. 为协程co准备运上下文“栈”
+    // 2. 为协程co准备运上下文“栈”，功能相当于makecontext函数
 		coctx_make( &co->ctx,(coctx_pfn_t)CoRoutineFunc,co,0 );
 		co->cStart = 1;
 	}
   // 3. 将待切换的协程co入栈，置于协程环境env的协程栈的顶端，表明当前最新的协程是co
 	env->pCallStack[ env->iCallStackSize++ ] = co;
-  // 4. 调度到目标协程co
-  /*
-  用co_swap()，该函数将协程上下文环境切换为co的上下文环境，并进入co指定的函数内执行,
-  之前被切换出去的协程被挂起，直到co主动yield,让出cpu,才会恢复被切换出去的协程执行.
-  注意,这里的所有的协程都是在当前协程执行的,也就是说,所有的协程都是串行执行的,
-  调用co_resume()之后,执行上下文就跳到co的代码空间中去了。
-  因为co_swap()要等co主动让出cpu才会返回，而co的协程内部可能会resume新的协程继续执行下去，
-  所以co_swap()函数调用可能要等到很长时间才能返回。
-  */
+  // 4. 调度到目标协程co，功能相当于swapcontext函数
 	co_swap( lpCurrRoutine, co );
 }
 
@@ -610,11 +606,12 @@ void co_reset(stCoRoutine_t * co)
         co->stack_mem->occupy_co = NULL;
 }
 
+//libco的协程让出cpu，只能让给上一次被切换出去的协程
 void co_yield_env( stCoRoutineEnv_t *env )
 {
-	//获取当前执行的协程,也即当前协程环境的协程栈的栈顶,函数的第一行获取协程栈的次顶,也即上一次被切换的协程last,
-  //从这里也可以看出,libco的协程让出cpu,只能让给上一次被切换出去的协程
+  //获取协程栈的次顶,也即上一次被切换的协程last
 	stCoRoutine_t *last = env->pCallStack[ env->iCallStackSize - 2 ];
+  //获取当前执行的协程，也即当前协程环境的协程栈的栈顶
 	stCoRoutine_t *curr = env->pCallStack[ env->iCallStackSize - 1 ];
 
 	env->iCallStackSize--;
@@ -636,20 +633,26 @@ void save_stack_buffer(stCoRoutine_t* occupy_co)
 {
 	///copy out
 	stStackMem_t* stack_mem = occupy_co->stack_mem;
-	int len = stack_mem->stack_bp - occupy_co->stack_sp;//计算栈的大小
-  //释放协程栈buf
+  //计算协程栈的大小
+	int len = stack_mem->stack_bp - occupy_co->stack_sp;
+  //释放协程原来的“栈内容缓存空间”
 	if (occupy_co->save_buffer)
 	{
 		free(occupy_co->save_buffer), occupy_co->save_buffer = NULL;
 	}
-
+  //把协程栈的内容拷贝到“栈内容缓存空间”
 	occupy_co->save_buffer = (char*)malloc(len); //malloc buf;
 	occupy_co->save_size = len;
-  //把协程当前栈拷贝到栈buf
 	memcpy(occupy_co->save_buffer, occupy_co->stack_sp, len);
 }
 
-//将协程curr上下文环境切换为目标协程pending的上下文环境
+/*
+用co_swap()，该函数将协程上下文环境切换为pending_co的上下文环境，并进入co指定的函数内执行，
+之前被切换出去的协程被挂起，直到pending_co主动yield，让出cpu，才会恢复被切换出去的协程执行。
+注意,这里的所有的协程都是在当前协程执行的，也就是说，所有的协程都是串行执行的，调用co_resume()
+之后，执行上下文就跳到pending_co的代码空间中去了。因为co_swap()要等pending_co主动让出cpu才会返回，
+而co的协程内部可能会resume新的协程继续执行下去，所以co_swap()函数调用可能要等到很长时间才能返回。
+*/
 void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 {
  	stCoRoutineEnv_t* env = co_get_curr_thread_env();
@@ -681,8 +684,8 @@ void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 		}
 	}
 
-	//swap context 栈的切换
-	coctx_swap(&(curr->ctx),&(pending_co->ctx) );
+	//swap context 函数调用上下文的切换
+	coctx_swap(&(curr->ctx),&(pending_co->ctx));
 
 	//stack buffer may be overwrite, so get again;
 	stCoRoutineEnv_t* curr_env = co_get_curr_thread_env();

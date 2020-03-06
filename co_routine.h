@@ -30,8 +30,8 @@ struct stShareStack_t;
 //当前协程属性
 struct stCoRoutineAttr_t
 {
-	int stack_size;//“共享栈”里面的协程栈个数
-	stShareStack_t*  share_stack;//“共享栈”
+	int stack_size; //协程栈的大小
+	stShareStack_t*  share_stack;//共享栈空间
 	stCoRoutineAttr_t()
 	{
 		stack_size = 128 * 1024;
@@ -45,7 +45,7 @@ typedef void *(*pfn_co_routine_t)( void * );
 
 //2.co_routine 协程的操作接口
 
-int 	co_create( stCoRoutine_t **co,const stCoRoutineAttr_t *attr,void *(*routine)(void*),void *arg );
+int 	  co_create( stCoRoutine_t **co,const stCoRoutineAttr_t *attr,void *(*routine)(void*),void *arg );
 void    co_resume( stCoRoutine_t *co );
 void    co_yield( stCoRoutine_t *co );
 void    co_yield_ct(); //ct = current thread
@@ -59,7 +59,7 @@ void 	co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg );
 
 //3.specific
 
-int 	co_setspecific( pthread_key_t key, const void *value );
+int 	  co_setspecific( pthread_key_t key, const void *value );
 void *	co_getspecific( pthread_key_t key );
 
 //4.event

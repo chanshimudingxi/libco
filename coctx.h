@@ -25,7 +25,7 @@ struct coctx_param_t
 	const void *s1;
 	const void *s2;
 };
-//函数栈物理构成，通过这个就可以进行栈的切换，参考x86-64 下函数调用及栈帧原理
+//函数调用时的栈结构，通过这个就可以进行函数调用，结构类似ucontext_t
 //----- --------
 // 32 bit
 // | regs[0]: ret |

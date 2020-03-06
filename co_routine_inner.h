@@ -26,32 +26,32 @@ struct stCoSpec_t
 {
 	void *value;
 };
-//协程调度结构-函数栈的实现
+//协程栈
 struct stStackMem_t
 {
-	stCoRoutine_t* occupy_co;//函数栈当前的协程
-	int stack_size;
+	stCoRoutine_t* occupy_co;//当前占用“协程栈”的协程
+	int stack_size;//栈的大小
 	char* stack_bp; //stack_buffer + stack_size。栈的基址，栈是从高到低扩展
 	char* stack_buffer;
 
 };
 
-//协程调度结构-栈管理结构-共享栈-环形结构
+//协程栈管理结构，共享栈
 struct stShareStack_t
 {
 	unsigned int alloc_idx;
 	int stack_size;
-	int count;
-	stStackMem_t** stack_array;
+	int count;//协程栈数组中元素个数
+	stStackMem_t** stack_array;//协程栈数组
 };
 
 
 //协程
 struct stCoRoutine_t
 {
-	stCoRoutineEnv_t *env;//当前所在线程的环境变量，对于整个线程上的所有协程来说，它是一个全局性的变量
-	pfn_co_routine_t pfn;//协程的执行主体函数
-	void *arg;//函数参数
+	stCoRoutineEnv_t *env;//当前所在线程的环境变量，对于整个线程上的所有协程来说，它是全局性的
+	pfn_co_routine_t pfn;//协程执行的主体函数
+	void *arg;//主体函数的参数
 	coctx_t ctx;//协程上下文
 
 	char cStart;
@@ -67,6 +67,8 @@ struct stCoRoutine_t
 
 
 	//save satck buffer while confilct on same stack_buffer;
+  //共享栈由于是环式的，所以 在分配新的栈时可能用的原来的内存，存在冲突，
+  //这个时候需要先把原来内存里面的内容拷贝出来，进行保存，然后才能复用。
 	char* stack_sp; 
 	unsigned int save_size;
 	char* save_buffer;

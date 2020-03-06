@@ -16,9 +16,8 @@
 * limitations under the License.
 */
 
-/*
-基础知识：x86-64 下函数调用及栈帧原理
-*/
+
+/* 参考x86-64下函数调用及栈帧原理，通过改变一些关键寄存器的值就实现代码执行的跳转*/
 
 .globl coctx_swap
 #if !defined( __APPLE__ )
