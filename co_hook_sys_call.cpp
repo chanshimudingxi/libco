@@ -328,6 +328,7 @@ int close(int fd)
 
 	return ret;
 }
+
 ssize_t read( int fd, void *buf, size_t nbyte )
 {
 	HOOK_SYS_FUNC( read );
@@ -350,6 +351,8 @@ ssize_t read( int fd, void *buf, size_t nbyte )
 	pf.fd = fd;
 	pf.events = ( POLLIN | POLLERR | POLLHUP );
 
+  //调用poll函数之后，相关事件注册到了EventLoop中后，该协程就yield走了。
+  //当epoll相关事件触发或者超时触发时，会再次resume该协程，处理接下来的流程。
 	int pollret = poll( &pf,1,timeout );
 
 	ssize_t readret = g_sys_read_func( fd,(char*)buf ,nbyte );
@@ -992,7 +995,7 @@ struct hostent *co_gethostbyname(const char *name)
 #endif
 
 
-void co_enable_hook_sys() //�⺯������������,�����ļ��ᱻ���ԣ�����
+void co_enable_hook_sys() //�⺯������������,�����ļ��ᱻ���ԣ�����
 {
 	stCoRoutine_t *co = GetCurrThreadCo();
 	if( co )

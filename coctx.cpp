@@ -42,38 +42,12 @@ available.
 #define R8 12
 #define R9 13
 
-//----- --------
-// 32 bit
-// | regs[0]: ret |
-// | regs[1]: ebx |
-// | regs[2]: ecx |
-// | regs[3]: edx |
-// | regs[4]: edi |
-// | regs[5]: esi |
-// | regs[6]: ebp |
-// | regs[7]: eax |  = esp
 enum {
   kEIP = 0,
   kEBP = 6,
   kESP = 7,
 };
 
-//-------------
-// 64 bit
-// low | regs[0]: r15 |
-//    | regs[1]: r14 |
-//    | regs[2]: r13 |
-//    | regs[3]: r12 |
-//    | regs[4]: r9  |
-//    | regs[5]: r8  |
-//    | regs[6]: rbp |
-//    | regs[7]: rdi |
-//    | regs[8]: rsi |
-//    | regs[9]: ret |  //ret func addr
-//    | regs[10]: rdx |
-//    | regs[11]: rcx |
-//    | regs[12]: rbx |
-// hig | regs[13]: rsp |
 enum {
   kRDI = 7,
   kRSI = 8,
@@ -107,7 +81,7 @@ int coctx_make(coctx_t* ctx, coctx_pfn_t pfn, const void* s, const void* s1) {
   return 0;
 }
 #elif defined(__x86_64__)
-//创建“栈上下文”
+//为协程准备的上下文（栈）
 int coctx_make(coctx_t* ctx, coctx_pfn_t pfn, const void* s, const void* s1) {
   char* sp = ctx->ss_sp + ctx->ss_size - sizeof(void*); //计算栈顶地址
   sp = (char*)((unsigned long)sp & -16LL);//这里对第4位清零，使栈64位内存对齐。向下取整跟满递减搭配。

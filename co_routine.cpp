@@ -49,11 +49,11 @@ stCoRoutine_t *GetCurrCo( stCoRoutineEnv_t *env );
 struct stCoEpoll_t;
 
 //“由于用的是共享栈的技术，同时又是N：1的模型，所以这个其实就是当前线程
-//用来进行协议切换的统一管理结构”。由一个事件循环和一个栈共享区域构成。
+//用来进行协议切换的统一管理结构”。由一个事件循环和一个调用栈构成。
 struct stCoRoutineEnv_t
 {
-	stCoRoutine_t *pCallStack[ 128 ];//栈共享区域，每个就是一个协程
-	int iCallStackSize;//已经压栈的协程个数
+	stCoRoutine_t *pCallStack[ 128 ];//协程的调用栈，从参数可以看出，libco只能支持128层协程的嵌套调用，这个深度已经足够使用了。
+	int iCallStackSize;//代表当前的调用深度
 	stCoEpoll_t *pEpoll;//事件循环
 
 	//for copy stack log lastco and nextco
@@ -316,15 +316,15 @@ struct stTimeoutItem_t;
 struct stCoEpoll_t
 {
 	int iEpollFd; //epoll fd
-	static const int _EPOLL_SIZE = 1024 * 10;//epoll大小
+	static const int _EPOLL_SIZE = 1024 * 10;//epoll size
 
-	struct stTimeout_t *pTimeout;//定时器
+	struct stTimeout_t *pTimeout;//时间轮定时管理器。记录了所有的定时事件
 
-	struct stTimeoutItemLink_t *pstTimeoutList;//超时事件
+	struct stTimeoutItemLink_t *pstTimeoutList;//本轮超时的事件
 
-	struct stTimeoutItemLink_t *pstActiveList;//存活事件
+	struct stTimeoutItemLink_t *pstActiveList;//本轮触发的事件
 
-	co_epoll_res *result; 
+	co_epoll_res *result; //当前已触发的事件，给epoll或kevent用。如果是epoll的话，则是epoll_wait的已触发事件
 
 };
 typedef void (*OnPreparePfn_t)( stTimeoutItem_t *,struct epoll_event &ev, stTimeoutItemLink_t *active );
@@ -521,7 +521,7 @@ struct stCoRoutine_t *co_create_env( stCoRoutineEnv_t * env, const stCoRoutineAt
 
 	return lp;
 }
-
+//创建协程
 int co_create( stCoRoutine_t **ppco,const stCoRoutineAttr_t *attr,pfn_co_routine_t pfn,void *arg )
 {
 	if( !co_get_curr_thread_env() ) 
@@ -532,6 +532,7 @@ int co_create( stCoRoutine_t **ppco,const stCoRoutineAttr_t *attr,pfn_co_routine
 	*ppco = co;
 	return 0;
 }
+//释放协程资源
 void co_free( stCoRoutine_t *co )
 {
     if (!co->cIsShareStack) 
@@ -552,24 +553,36 @@ void co_free( stCoRoutine_t *co )
 
     free( co );
 }
+//释放协程
 void co_release( stCoRoutine_t *co )
 {
     co_free( co );
 }
 
 void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co);
-//恢复协程
+//调度到目标协程co，协程可以嵌套创建
 void co_resume( stCoRoutine_t *co )
 {
 	stCoRoutineEnv_t *env = co->env;
+  // 1. 获取当前正在执行的协程，即马上要被切换出去的协程
 	stCoRoutine_t *lpCurrRoutine = env->pCallStack[ env->iCallStackSize - 1 ];
 	if( !co->cStart )
 	{
+    // 2. 为协程co准备运上下文“栈”
 		coctx_make( &co->ctx,(coctx_pfn_t)CoRoutineFunc,co,0 );
 		co->cStart = 1;
 	}
+  // 3. 将待切换的协程co入栈，置于协程环境env的协程栈的顶端，表明当前最新的协程是co
 	env->pCallStack[ env->iCallStackSize++ ] = co;
-  //当前协程调度到目标协程
+  // 4. 调度到目标协程co
+  /*
+  用co_swap()，该函数将协程上下文环境切换为co的上下文环境，并进入co指定的函数内执行,
+  之前被切换出去的协程被挂起，直到co主动yield,让出cpu,才会恢复被切换出去的协程执行.
+  注意,这里的所有的协程都是在当前协程执行的,也就是说,所有的协程都是串行执行的,
+  调用co_resume()之后,执行上下文就跳到co的代码空间中去了。
+  因为co_swap()要等co主动让出cpu才会返回，而co的协程内部可能会resume新的协程继续执行下去，
+  所以co_swap()函数调用可能要等到很长时间才能返回。
+  */
 	co_swap( lpCurrRoutine, co );
 }
 
@@ -599,7 +612,8 @@ void co_reset(stCoRoutine_t * co)
 
 void co_yield_env( stCoRoutineEnv_t *env )
 {
-	
+	//获取当前执行的协程,也即当前协程环境的协程栈的栈顶,函数的第一行获取协程栈的次顶,也即上一次被切换的协程last,
+  //从这里也可以看出,libco的协程让出cpu,只能让给上一次被切换出去的协程
 	stCoRoutine_t *last = env->pCallStack[ env->iCallStackSize - 2 ];
 	stCoRoutine_t *curr = env->pCallStack[ env->iCallStackSize - 1 ];
 
@@ -622,8 +636,8 @@ void save_stack_buffer(stCoRoutine_t* occupy_co)
 {
 	///copy out
 	stStackMem_t* stack_mem = occupy_co->stack_mem;
-	int len = stack_mem->stack_bp - occupy_co->stack_sp;
-
+	int len = stack_mem->stack_bp - occupy_co->stack_sp;//计算栈的大小
+  //释放协程栈buf
 	if (occupy_co->save_buffer)
 	{
 		free(occupy_co->save_buffer), occupy_co->save_buffer = NULL;
@@ -631,29 +645,30 @@ void save_stack_buffer(stCoRoutine_t* occupy_co)
 
 	occupy_co->save_buffer = (char*)malloc(len); //malloc buf;
 	occupy_co->save_size = len;
-
+  //把协程当前栈拷贝到栈buf
 	memcpy(occupy_co->save_buffer, occupy_co->stack_sp, len);
 }
 
-/*
- * 协程调度
-*/
+//将协程curr上下文环境切换为目标协程pending的上下文环境
 void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 {
  	stCoRoutineEnv_t* env = co_get_curr_thread_env();
 
-	//get curr stack sp
+	//get curr stack sp 获取当前协程的栈顶
 	char c;
 	curr->stack_sp= &c;
 
 	if (!pending_co->cIsShareStack)
 	{
+    //非共享栈模式
 		env->pending_co = NULL;
 		env->occupy_co = NULL;
 	}
 	else 
 	{
+    //共享栈模式
 		env->pending_co = pending_co;
+
 		//get last occupy co on the same stack mem
 		stCoRoutine_t* occupy_co = pending_co->stack_mem->occupy_co;
 		//set pending co to occupy thest stack mem;
@@ -666,7 +681,7 @@ void co_swap(stCoRoutine_t* curr, stCoRoutine_t* pending_co)
 		}
 	}
 
-	//swap context 栈的切换，把当前协程栈切换成pending状态的协程栈
+	//swap context 栈的切换
 	coctx_swap(&(curr->ctx),&(pending_co->ctx) );
 
 	//stack buffer may be overwrite, so get again;
@@ -925,6 +940,11 @@ stCoRoutine_t *GetCurrThreadCo( )
 
 
 typedef int (*poll_pfn_t)(struct pollfd fds[], nfds_t nfds, int timeout);
+/*
+1. 将poll的相关事件转换为epoll相关事件，并注册到当前线程的epoll中。
+2. 注册超时事件，到当前的epoll中
+3. 调用co_yield_ct, 让出该协程。
+*/
 int co_poll_inner( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeout, poll_pfn_t pollfunc)
 {
     if (timeout == 0)

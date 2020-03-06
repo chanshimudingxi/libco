@@ -25,6 +25,33 @@ struct coctx_param_t
 	const void *s1;
 	const void *s2;
 };
+//函数栈物理构成，通过这个就可以进行栈的切换，参考x86-64 下函数调用及栈帧原理
+//----- --------
+// 32 bit
+// | regs[0]: ret |
+// | regs[1]: ebx |
+// | regs[2]: ecx |
+// | regs[3]: edx |
+// | regs[4]: edi |
+// | regs[5]: esi |
+// | regs[6]: ebp |
+// | regs[7]: eax |  = esp
+//-------------
+// 64 bit
+// low | regs[0]: r15 |
+//    | regs[1]: r14 |
+//    | regs[2]: r13 |
+//    | regs[3]: r12 |
+//    | regs[4]: r9  |
+//    | regs[5]: r8  |
+//    | regs[6]: rbp |
+//    | regs[7]: rdi |
+//    | regs[8]: rsi |
+//    | regs[9]: ret |  //ret func addr
+//    | regs[10]: rdx |
+//    | regs[11]: rcx |
+//    | regs[12]: rbx |
+// hig | regs[13]: rsp |
 struct coctx_t
 {
 #if defined(__i386__)
